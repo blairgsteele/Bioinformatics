@@ -1,0 +1,2481 @@
+---
+title: "Breast Cancer R Analysis Project"
+author: Blair Steele
+course: BINF 5003 - Data Mining
+student ID: n01606240
+date: April 23, 2026
+
+---
+
+```{r}
+
+# save.image("my_workspace.RData")
+# save.image("BcancerRAnalysisProject_workspace.RData")
+# load("BcancerRAnalysisProject_workspace.RData")
+
+```
+
+----------------------------
+RESEARCH QUESTION
+----------------------------
+
+Can RNA-seq. multi-gene signatures from TCGA BRCA data be used to predict overall survival in breast cancer patient?
+
+----------------------------
+PROJECT PIPLINE
+----------------------------
+
+Data Acquisition -> Clinical Data Pre-processing & Integration -> Data Exploration & Visualization -> Pre-processing & Quality Assessment of RNA-seq Data -> Principal Component Analysis (PCA) -> Differential Expression Analysis -> Survival Analysis -> Key Findings & Biological Insights -> Conclusion & Future Work
+
+----------------------------
+
+```{r}
+
+library(tidyverse)
+library(dplyr)
+
+# install.packages("datasauRus")
+library(datasauRus)
+
+suppressPackageStartupMessages({
+    library(data.table)
+    library(tidyverse)
+    library(ggplot2)
+    library(ggpubr)
+    library(ggsignif)
+    library(ggrepel)
+})
+
+# install.packages(c("ggpubr", "ggsignif", "ggrepel"))
+
+```
+
+----------------------------
+CLINICAL DATA PRE-PROCESSING, TRANSFORMATION, AND INTEGRATION
+----------------------------
+
+```{r} 
+
+# Set Working Dictionary
+setwd("/Users/BGS/Desktop/🧬 CLINICAL BIOINFORMATICS - HUMBER (LU = Dec.4.2025)/★ SCHOOL/★ SEMESTER 1/BINF 5003 - Data Mining, Modeling and Biostatistics/ASSIGNMENTS ☆ Data Mining, Modeling and Biostatistics - BINF 5003/RNA Analysis Assignment - Breast Cancer 2")
+# here::here()
+
+# Check if the file exists in the folder
+file.exists("/Users/BGS/Desktop/🧬 CLINICAL BIOINFORMATICS - HUMBER (LU = Dec.4.2025)/★ SCHOOL/★ SEMESTER 1/BINF 5003 - Data Mining, Modeling and Biostatistics/ASSIGNMENTS ☆ Data Mining, Modeling and Biostatistics - BINF 5003/RNA Analysis Assignment - Breast Cancer 2") #TRUE file exists here
+# read.table("Human__TCGA_BRCA__MS__Clinical__Clinical__01_28_2016__BI__Clinical__Firehose.tsi")
+
+# Load clinical data as a dataframe
+matrix_table <- read.table(
+  "Human__TCGA_BRCA__MS__Clinical__Clinical__01_28_2016__BI__Clinical__Firehose.tsi",
+  header = TRUE,
+  sep = "\t",
+  stringsAsFactors = FALSE,
+  check.names = FALSE
+
+)
+
+exists("matrix_table") #TRUE
+
+dim(matrix_table) #20 rows (clinical attributes) 1,098 columns (# of patients)
+# head(matrix_table)
+head(matrix_table[, 1:5]) #by default, first 6 rows & 5 columns
+
+# colnames(matrix_table)
+# rownames(matrix_table)
+
+col2 <- matrix_table[, 1]
+head(col2)  
+
+# View(matrix_table)
+dim(matrix_table) #20 x 1,098 #NOT TIDY FORMAT
+
+# Save Matrix
+write.csv(matrix_table, "matrix_table.csv", row.names = FALSE)
+
+# Load matrix_table.csv
+# matrix_table <- read.csv("matrix_table.csv")
+
+``` 
+
+----------------------------
+----------------------------
+DATA WRANGLING FOR MATRIX TABLE
+
+Matrix_table = 20 rows x 1,098 columns
+- As of now, the original clinical matrix is not in tidy format;
+      -    The rows = variables such as race, gender, years_to_birth, tumor_purity, pathological_stage
+      -    The columns = patient (except thefirst column = attribute names - race, gender, years_to_birth, tumor_purity, pathological_stage etc.)
+
+- Transpose the matrix (i.e., flop the columns and rows), such that
+      -    One row = one patient
+      -    One column = one variable
+
+```{r}
+
+# Transpose matrix_table
+rownames(matrix_table) <- matrix_table [,1] #this makes the attributes into the rows
+new_matrix <- matrix_table [, -1] #first column (i.e., attribute names) removed
+transposed_matrix <- as.data.frame(t(new_matrix)) #transpose the matrix
+transposed_matrix$Patient_Barcode <- rownames(transposed_matrix) #add new column = "patient barcode"
+rownames(transposed_matrix) <- NULL
+
+# Make patient barcode the second column (i.e, after row number)
+cols <- colnames(transposed_matrix)
+cols <- cols[cols != "Patient_Barcode"] #removes the column from the position it is now in
+cols <- append(cols, "Patient_Barcode", after = 0) #puts column in index 1
+transposed_matrix <- transposed_matrix[, cols]
+
+# Change all column names to lowercase.
+colnames(transposed_matrix) <- tolower(colnames(transposed_matrix))
+
+# Standardize the barcode (remove . and replace with -)
+transposed_matrix$patient_barcode <-
+      toupper(gsub("\\.", "-", trimws(transposed_matrix$patient_barcode)))
+
+# Check for missing values/NAs in patient barcode column in transposed matrix table.
+sum(is.na(transposed_matrix$patient_barcode)) #returns 0 N/A values in patient barcode column in transposed matrix table.
+
+# Check for spaces at the end of variables
+grep("^\\s|\\s$", colnames(transposed_matrix), value = TRUE) #returns character(0) = means no column names have any leading or trailing spaces.
+
+# Fix row numbering after wrangling
+rownames(transposed_matrix) <- NULL
+
+# Sort transposed_matrix table by patient barcode
+# transposed_matrix <- transposed_matrix[
+#       order(transposed_matrix$patient_barcode),
+# ]
+
+# Summary of categorical variables in transposed_matrix
+categorical_cols <- sapply(transposed_matrix, is.character) #identifies factor/character columns
+print(categorical_cols)
+
+# lapply(transposed_matrix[, categorical_cols], unique) #identifies unique values in each categorial column
+# lapply(transposed_matrix[, categorical_cols], table) #identifies frequency of each unique value in each categorical column
+#notice "NAs"
+
+# CHECK FOR TYPOS/INCONSISTENT CODING IN CATEGORICAL DATA (race, gender, pathogical stage)
+# Inconsistent coding may include entries such as "Male", "male", "M", "Female", "F", "Femlae" etc.
+
+# CHECKING FOR MISSINGNESS (i.e., missing or N/A values)
+sum(is.na(transposed_matrix)) #4,144 NA's 
+
+# Change format from TCGA.5L.AAT0 to TCGA-5L-AAT0 (like in the new aggregated patient data set)
+transposed_matrix$patient_barcode <- toupper(gsub("\\.", "-", trimws(transposed_matrix$patient_barcode))) #now the patient barcodes are in the same format in both tables
+
+dim(transposed_matrix) #1,097 x 21
+# View(transposed_matrix) #new 'transposed clinical matrix' table after wrangling
+
+# Save Matrix
+# write.csv(transposed_matrix, "transposed_matrix.csv", row.names = FALSE)
+
+# Load transposed_matrix.csv
+# transposed_matrix <- read.csv("transposed_matrix.csv")
+
+```
+
+----------------------------
+----------------------------
+COMBINE ALL .TSV FILES 
+
+```{r} 
+
+library(dplyr)
+library(readr)
+
+# ("clinical.tsv", "exposure.tsv", "family_history.tsv", "follow_up.tsv" and "pathology_detail.tsv")
+
+# Set Working Directory
+setwd("/Users/BGS/Desktop/🧬 CLINICAL BIOINFORMATICS - HUMBER (LU = Dec.4.2025)/★ SCHOOL/★ SEMESTER 1/BINF 5003 - Data Mining, Modeling and Biostatistics/ASSIGNMENTS ☆ Data Mining, Modeling and Biostatistics - BINF 5003/RNA Analysis Assignment - Breast Cancer 2/clinical.project-tcga-brca.2026-02-12")
+
+# List all .tsv files in the folder
+files <- list.files(pattern = "\\.tsv$") #lists all tsv files in the folder
+print(files)
+# View(files)
+
+#READ .tsv FILES
+all_tsv_files <- lapply(files, function(f) {
+      all_tsv_df <- read_tsv(f, show_col_types = FALSE)
+      colnames(all_tsv_df) <- trimws(colnames(all_tsv_df)) #trimws removes white spaces
+
+      if ("cases.submitter_id" %in% colnames(all_tsv_df)) {
+        all_tsv_df <- all_tsv_df %>%
+            filter(!is.na(cases.submitter_id) & cases.submitter_id != "") %>% #removes missing NA values. "cases.submitter_id" is essentially the patient barcode (rename later)
+            group_by(cases.submitter_id) %>%
+            slice(1) %>% #ensures one row per patient
+            ungroup()
+      }
+      all_tsv_df 
+
+})
+
+# Merge all .tsv files by "cases.submitter_id"
+combined_patient_tsv_files <- Reduce(function(x, y) {
+      full_join(x, y, by = "cases.submitter_id")
+}, all_tsv_files)
+
+# Ensure duplicated columns, if any, are removed
+combined_patient_tsv_files <-
+      combined_patient_tsv_files[, !duplicated(colnames(combined_patient_tsv_files))]
+
+# Rename "cases.submitter_id" to "patient_barcode"
+colnames(combined_patient_tsv_files)[colnames(combined_patient_tsv_files) == "cases.submitter_id"] <- "patient_barcode"
+
+# Check if any NAs are in the patient barcode column
+any(is.na(combined_patient_tsv_files$patient_barcode)) #FALSE - no NA's
+
+# Move "patient_barcode" to index 1
+cols <- colnames(combined_patient_tsv_files)
+cols <- cols[cols != "patient_barcode"]
+cols <- c("patient_barcode", cols)
+combined_patient_tsv_files <- combined_patient_tsv_files[, cols]
+
+# Check for spaces in column names 
+grep("^\\s|\\s$", colnames(combined_patient_tsv_files), value = TRUE) #returns character(0) = means no column names have any leading or trailing spaces.
+
+# Note = column names are already lowercase (common practice)
+
+head(combined_patient_tsv_files)
+# View(combined_patient_tsv_files)
+# colnames(combined_patient_tsv_files)
+dim(combined_patient_tsv_files) #1,098 x 543
+
+# NOTE = The combined_patient_tsv_files is now in tidy format (row = patient, column = variables), and does not need to be transposed. 
+
+# Save Matrix
+# write.csv(combined_patient_tsv_files, "combined_patient_tsv_files.csv", row.names = FALSE)
+
+# Load combined_patient_tsv_files.csv
+# combined_patient_tsv_files <- read.csv("combined_patient_tsv_files.csv")
+
+```
+
+```{r}
+
+# Number of males and females in study 
+table(combined_patient_tsv_files$demographic.gender) #Males = 12, Females = 1085
+
+# Check for inconsistent coding entries such as "Male", "male", "M", "Female", "F", "Femlae" etc.
+unique(combined_patient_tsv_files$demographic.gender) #only "female", "male", and "'--"  exit
+
+```
+
+----------------------------
+----------------------------
+MERGE BOTH TRANSPOSED MATRIX (CLINICAL DATA) & COMBINED PATIENT TSV FILE MATRIX
+
+```{r}
+
+library(dplyr)
+
+# Identify all columns of the transposed matrix except the "patient_barcode" column
+clinical_cols <- setdiff(colnames(transposed_matrix), "patient_barcode")
+
+# Ensures that only unique clinical data from the transposed matrix is added to the combined_patient_tsv_files matrix
+new_clinical_cols <- clinical_cols[!clinical_cols %in% colnames(combined_patient_tsv_files)] 
+
+# Create a tidy subset of all unique variables + the patient barcodes
+transposed_subset <- transposed_matrix %>%
+      select(patient_barcode, all_of(new_clinical_cols))
+
+# Match variables to patient barodes
+final_aggregated_patient_data <- combined_patient_tsv_files %>%
+      left_join(transposed_subset, by = "patient_barcode") 
+
+all_cols <- c("patient_barcode", new_clinical_cols,
+      setdiff(colnames(final_aggregated_patient_data), c("patient_barcode", new_clinical_cols)))
+
+# Reorder the columns
+final_aggregated_patient_data <- final_aggregated_patient_data[, all_cols] 
+
+dim(final_aggregated_patient_data) #1,098 x 536
+# View(final_aggregated_patient_data)
+
+# Save final_aggregated_patient_data Matrix
+write.csv(final_aggregated_patient_data, "final_aggregated_patient_data.csv", row.names = FALSE)
+
+# Load final_aggregated_patient_data.csv
+final_aggregated_patient_data <- read.csv("final_aggregated_patient_data.csv")
+
+```
+
+----------------------------
+----------------------------
+EXPLORATORY ANALYSIS - VISUALIZATION OF THE RELATIONSHIPS BETWEEN IMPORTANT CLINICAL VARIABLES
+
+```{r} 
+
+#NOTE
+#CATEGORICAL variables = gender, race, status, ethnicity, pathologic stage, pathology_T_stage, pathology_N_stage, pathology_M_stage, radiation therapy, HER2.Status, PR.Status, ER.Status, PAM50, histological type
+#CATEGORICAL variables should be a FACTOR data type.
+#for categorical variables, convert from CHARACTER to FACTOR.
+
+#CONTINUOUS variables such as age (i.e., years to birth), tumor purity, overallsurvival, overall_survival, median overall survival, number of lymph nodes
+#CONTINUOUS variables have to be NUMERIC.
+#convert from CHARACTER to NUMERIC. 
+
+```
+
+----------------------------
+AGE STATISTICS
+```{r}
+
+age <- as.numeric(transposed_matrix$years_to_birth)
+age <- age[!is.na(age)] # Remove NA's 
+
+# Age Stats
+min(age) #26
+max(age) #90
+mean(age) #58.59
+median(age) #59
+sd(age) #13.19
+
+```
+
+----------------------------
+AGE DISTRIBUTION HISTOGRAM
+
+```{r}
+# Extract age column & Convert to numeric
+age <- as.numeric(transposed_matrix[ ,"years_to_birth"])
+age <-age[!is.na(age)] # Remove any NA's 
+
+# Plot & Save Age Distribution Histogram
+
+png("age_histogram.png", width = 800, height = 800)
+
+hist(age,
+     main = "Distribution of Age",
+     xlab = "Age (In Years)",
+     col = "yellowgreen",
+     breaks = 20)
+
+dev.off()
+
+# Print in Report
+
+hist(age,
+     main = "Distribution of Age",
+     xlab = "Age (In Years)",
+     col = "yellowgreen",
+     breaks = 20)
+
+```
+
+Interpretation of Age Distribution Histogram:
+Broad age distribution. Youngest patient = 26 years; Oldest patient = 90 years.
+
+----------------------------
+TUMOR PURITY DISTRIBUTION HISTOGRAM
+
+```{r} 
+
+# Extract purity column & Convert to numeric
+purity <- as.numeric(transposed_matrix[ ,"tumor_purity"])
+
+# Remove any NA's 
+purity <-purity[!is.na(purity)]
+
+# Plot & Save Tumor Purity Histogram
+png("tumor_purity_histogram.png", width = 800, height = 600)
+
+hist(purity, 
+    main = "Tumor Purity Distribution", 
+    xlab = "Purity", 
+    col="#e69e41", 
+    breaks =20)
+
+dev.off()
+
+# Print in Report
+hist(purity, 
+    main = "Tumor Purity Distribution", 
+    xlab = "Purity", 
+    col="#e69e41", 
+    breaks =20)
+
+```
+
+Interpretation of Tumor Purity Distribution Histogram:
+      - Unimodal, slightly skewed left (i.e., tail toward low-purity outliers)
+      - Generally high tumor purity across samples (most clustering between ~0.65 - 0.85). 
+      - High tumor purity = More cancer cells than normal cells in the sample.
+
+----------------------------
+TUMOR PURITY vs. AGE SCATTER PLOT
+
+```{r}
+
+# Extract age and purity columns & Convert to numeric
+age <- as.numeric(transposed_matrix[ ,"years_to_birth"])
+purity <- as.numeric(transposed_matrix[ ,"tumor_purity"])
+
+purity_age_df <- data.frame(Age = age, TumorPurity = purity) #convert to dataframe
+purity_age_df <- purity_age_df[complete.cases(purity_age_df), ] #this removes the rows that have an NA
+
+# Plot & Save Tumor Purity v. Age Scatter Plot
+png("tumor_purity_vs_age.png", width = 800, height = 600)
+
+plot(purity_age_df$Age, purity_age_df$TumorPurity,
+      xlab = "Age (Years)",
+      ylab = "Tumor Purity",
+      main = "Tumor Purity v. Age",
+      pch =16, #plot point = solid circle
+      col = "red")
+
+dev.off()
+
+# Print in Report
+plot(purity_age_df$Age, purity_age_df$TumorPurity,
+      xlab = "Age (Years)",
+      ylab = "Tumor Purity",
+      main = "Tumor Purity v. Age",
+      pch =16, #plot point = solid circle
+      col = "red")
+
+```
+
+Interpretation of Tumor Purity v. Age Scatter Plot:
+No apparent trend. Tumor purity does not seem to correlate with age.
+
+----------------------------
+TUMOR PURITY vs. OVERALL SURVIVAL SCATTER PLOT
+
+```{r}
+
+# Extract purity and overall_survival columns & Convert to numeric
+purity <- as.numeric(transposed_matrix[ ,"tumor_purity"]) #extracts tumor_purity column
+overall_survival <- as.numeric(transposed_matrix[ , "overall_survival"])
+
+# Create dataframe
+df_surv <- data.frame(Purity = purity, OverallSurvival = overall_survival)
+
+# Remove NA's
+df_surv <- df_surv[!is.na(df_surv$Purity) & !is.na(df_surv$OverallSurvival), ]
+
+# Plot & Save Tumor Purirty vs. Overall Survival Scatter Plot
+png("purity_v_survival.png", width = 800, height = 600)
+
+plot(df_surv$Purity, df_surv$OverallSurvival,
+    xlab = "Tumor Purity",
+    ylab = "Overall Survival (days)",
+    main = "Tumor Purity v. Overall Survival",
+    pch = 16, col = "#a9db2b")
+
+# Add Linear Trend Line
+abline(lm(OverallSurvival ~ Purity, data = df_surv), col= "#ff5500", lwd=2)
+
+dev.off()
+
+# Print in Report
+plot(df_surv$Purity, df_surv$OverallSurvival,
+    xlab = "Tumor Purity",
+    ylab = "Overall Survival (days)",
+    main = "Tumor Purity v. Overall Survival",
+    pch = 16, col = "#a9db2b")
+
+# Add Linear Trend Line
+abline(lm(OverallSurvival ~ Purity, data = df_surv), col= "#ff5500", lwd=2)
+
+```
+
+Interpretation of Tumor Purirty vs. Overall Survival Scatter Plot:
+      - No strong correlation between Tumor Purity and Overall Survival, as trend line is almost completely horizontal. 
+      - May suggest that other factors may be more influential on overall patient survival, than tumor purity.
+
+----------------------------
+TUMOR PURITY v. STAGE PLOT
+
+```{r}
+
+# Extract pathological_stage column
+stage <- unlist(transposed_matrix[ ,"pathologic_stage"])
+
+# Convert to numeric
+purity <- as.numeric(transposed_matrix[ ,"tumor_purity"])
+
+# Create dataframe
+df_purity_stage <- data.frame(Stage=stage, Purity=purity)
+
+# Remove NA's
+df_purity_stage <- df_purity_stage[!is.na(df_purity_stage$Stage) & !is.na(df_purity_stage$Purity), ]
+
+# Plot & Save Tumor Purity v. Stage Box-and-Whisper Plot
+png("Tumor_Purity_by_Stage.png", width = 800, height = 600)
+
+boxplot(Purity ~ Stage, data=df_purity_stage, 
+      main="Tumor Purity v. Stage", 
+      col="powderblue")
+
+dev.off()
+
+# Print in Report
+boxplot(Purity ~ Stage, data=df_purity_stage, 
+      main="Tumor Purity v. Stage", 
+      col="powderblue")
+
+```
+
+Interpretation of Tumor Purity v. Stage Box-and-Whisper Plot:
+      - No obvious linear correlation between Tumor Purity & Pathological Stage.
+      - High purity doesn't necessarily mean low survival, and vice versa.
+
+----------------------------
+----------------------------
+EXPLORATION OF PAM50 SUBTYPES
+
+```{r}
+
+table(transposed_matrix$pam50)
+
+# Basal (147)  Her2 (67) LumA (426)  LumB (186)
+
+```
+
+Interpretation:
+Most patients have the Luminal A molecular subtype of breast cancer.
+
+----------------------------
+TUMOR PURITY v. PAM50 BOXPLOT
+
+```{r}
+
+# Extract PAM50 column
+pam50 <- unlist(transposed_matrix[ ,"pam50"])
+
+# Convert to numeric
+purity <- as.numeric(transposed_matrix[ ,"tumor_purity"])
+
+# Create dataframe
+df_pam_50_new <- data.frame(PAM50Subtype=pam50, Purity=purity)
+
+# Remove NA's 
+df_pam_50_new <- df_pam_50_new[!is.na(df_pam_50_new$PAM50Subtype) & !is.na(df_pam_50_new$Purity), ]
+
+# Plot & Save Tumor Purity v. PAM50 Boxplot
+png("purity_v_pam50_boxplot.png", width = 800, height = 600)
+
+boxplot(Purity ~ PAM50Subtype, data=df_pam_50_new, 
+      main="Tumor Purity v. PAM50", 
+      xlab = "PAM50 Subtype",
+      ylab = "Tumor Purity",
+      col="#b435b6")
+
+dev.off()
+
+# Print in Report
+boxplot(Purity ~ PAM50Subtype, data=df_pam_50_new, 
+      main="Tumor Purity v. PAM50", 
+      xlab = "PAM50 Subtype",
+      ylab = "Tumor Purity",
+      col="#b435b6")
+
+```
+
+Interpretation:
+Tumor purity is variable across PAM50 subtypes. 
+
+----------------------------
+SURVIVAL DISTRIBUTION HISTOGRAM
+
+```{r}
+
+# Extract overall_survival column & Remove NA's
+overall_survival <- overall_survival[!is.na(overall_survival)]
+
+# Plot & Save Survival Distribution Histogram
+png("overall_survival_histogram.png", width = 800, height = 600)
+
+hist(overall_survival, 
+      main = "Overall Survival Distribution", 
+      xlab="Survival (days)", 
+      col= "tomato2", 
+      breaks=20)
+
+dev.off()
+
+# Print in Report
+hist(overall_survival, 
+      main = "Overall Survival Distribution", 
+      xlab="Survival (days)", 
+      col= "tomato2", 
+      breaks=20)
+
+```
+
+Interpretation of Survival Distribution Histogram:
+      - Heavily skewed right (i.e., small number of long-term survivors aftre 4,000 days.)
+      - Most patients have a survival time between 500 and 1,000 days. 
+      - Sharp decline after 2,000 days
+
+----------------------------
+AGE vs. SURVIVAL SCATTER PLOT
+
+```{r}
+
+# Extract overall_survival and age column & Convert to numeric
+overall_survival <- as.numeric(transposed_matrix[ , "overall_survival"])
+age <- as.numeric(transposed_matrix[ ,"years_to_birth"])
+
+# Create dataframe
+df <- data.frame(Age = age, OverallSurvival = overall_survival)
+
+# Remove NA's
+df <- df[complete.cases(df), ]
+
+# Plot & Save Age v. Survival Outcome Scatter Plot
+png("age_v_survival.png", width = 800, height = 600)
+
+plot(df$Age, df$OverallSurvival,
+    xlab = "Age",
+    ylab = "Overall Survival (Days)",
+    main = "Patient Age v. Survival Outcome",
+    col = "#dc9107",
+    pch = 16) 
+
+# Add Trendline
+abline(lm(OverallSurvival ~ Age, data=df), col="blue", lwd=2)
+
+dev.off()
+
+# Print in Report
+plot(df$Age, df$OverallSurvival,
+    xlab = "Age",
+    ylab = "Overall Survival (Days)",
+    main = "Patient Age v. Survival Outcome",
+    col = "#dc9107",
+    pch = 16) 
+
+```
+
+Interpretation of Age v. Survival Outcome Scatter Plot:
+Weak correlation between age and survival. 
+
+----------------------------
+OVERALL SURVIVAL BY STAGE BOXPLOT
+
+```{r}
+
+# Extract pathological_stage and overall_survival columns
+stage <- unlist(transposed_matrix[ ,"pathologic_stage"])
+overall_survival <- as.numeric(transposed_matrix[ , "overall_survival"])
+
+# Create dataframe 
+df2 <- data.frame(Stage = stage, Survival = overall_survival)
+
+#Create & Save Overall Survival by Stage Boxplot
+png("survival_by_stage_boxplot.png", width = 800, height = 600)
+
+boxplot(Survival ~ Stage, data = df2,
+        main = "Overall Survival by Stage",
+        col = "mistyrose")
+
+dev.off()
+
+# Print in Report
+boxplot(Survival ~ Stage, data = df2,
+        main = "Overall Survival by Stage",
+        col = "mistyrose")
+
+```
+
+Interpretation of Overall Survival by Stage Boxplot: 
+      - Median survival decreases as cancer progresses from Stages I - IV.
+            - Stage I = Highest median survival.
+            - Stage IV = Lowest median survival.            
+
+----------------------------
+NUMBER OF LYMPH NODES v. OVERALL SURVIVAL SCATTER PLOT
+
+```{r}
+
+# Extract pathological_stage column
+lymph_nodes <- as.numeric(transposed_matrix[ , "number_of_lymph_nodes"])
+overall_survival <- as.numeric(transposed_matrix[ , "overall_survival"])
+
+# Create dataframe
+df_ln <- data.frame(LymphNodes = lymph_nodes, OverallSurvival = overall_survival)
+
+# Remove NA's
+df_ln <- df_ln[complete.cases(df_ln), ]
+
+# Create & Save Lymph Nodes v. Overall Survival Scatter Plot
+png("lymph_nodes_v_survival.png", width = 800, height = 600)
+
+plot(df_ln$LymphNodes, df_ln$OverallSurvival,
+    xlab = "Number of Lymph Nodes",
+    ylab = "Overall Survival (Days)",
+    main = "Number of Lymph Nodes v. Overall Survival",
+    col = "#29aaef",
+    pch = 16)
+
+dev.off()
+
+# Print in Report
+plot(df_ln$LymphNodes, df_ln$OverallSurvival,
+    xlab = "Number of Lymph Nodes",
+    ylab = "Overall Survival (Days)",
+    main = "Number of Lymph Nodes v. Overall Survival",
+    col = "#29aaef",
+    pch = 16)
+
+```
+
+Interpretation of Lymph Nodes v. Overall Survival Scatter Plot: 
+      - Inverse correlation between Number of Lymph Nodes and Overall Survival.
+      - Higher lymph node count = lower survival.
+
+----------------------------
+PATHOLOGIC STAGE DISTRIBUTION BARPLOT
+
+```{r} 
+
+# Extract pathological_stage column
+stage <- unlist(transposed_matrix[ ,"pathologic_stage"])
+
+#Create & Save Pathologic Stage Distribution Barplot
+png("stage_distribution_barplot.png", width = 800, height = 600)
+
+barplot(table(stage), main="Pathologic Stage Distribution", col="#039a9a", las=2)
+
+dev.off()
+
+# Print in Report
+barplot(table(stage), main="Pathologic Stage Distribution", col="#039a9a", las=2)
+
+```
+
+Interpretation of Pathologic Stage Distribution Barplot: 
+      - Most patients are in Stage II.
+      - Stage IV has the least amount of patients.
+
+----------------------------
+----------------------------
+CORRELATION CHECK BETWEEN CONTINUOUS VARIABLES 
+```{r}
+
+# AGE v. TUMOR PURITY
+cor(age, purity, use="complete.obs") #0.082
+# Interpretation = weak POSITIVE correlation between AGE & PURITY.
+# As age increases, purity only slightly increases.
+# Close to 0 = almost no relationship.
+
+# AGE v. OVERALL SURVIVAL
+cor(age, overall_survival, use="complete.obs") #-0.168
+# Interpretation = weak NEGATIVE correlation between AGE & SURVIVAL.
+# As Age increases, Overall Survival decreases, but weak relationship.
+
+# TUMOR PURITY v. OVERALL SURVIVAL
+cor(purity, overall_survival, use="complete.obs") #-0.007
+# Interpretation = weak NEGATIVE correlation between PURITY & SURVIVAL. 
+# Small NEGATIVE correlation = suggests tumor purity and overall survival are independent of each other. 
+
+```
+
+----------------------------
+----------------------------
+PRE-PROCESSING & QUALITY ASSESSMENT OF RNA-SEQ GENE EXPRESSION DATA.
+
+```{r} 
+
+# getwd()
+
+# Load RNA-seq data (.cct file)
+lines <- readLines ("Human__TCGA_BRCA__UNC__RNAseq__GA_RNA__01_28_2016__BI__Gene__Firehose_RSEM_log2.cct", n = 5)
+# print(lines)
+
+RNA_seq_data <- read.table("Human__TCGA_BRCA__UNC__RNAseq__GA_RNA__01_28_2016__BI__Gene__Firehose_RSEM_log2.cct", header = TRUE, sep = "\t", stringsAsFactors = FALSE)
+
+# Change "gene name" to "gene_name"
+RNA_seq_data <- RNA_seq_data %>%
+      rename('gene_name' = 'attrib_name')
+
+# Fix format of patient barcodes from TCGA.A1.A0SD to TCGA-A1-A0SD (consistent across all datasets)
+colnames(RNA_seq_data)[-1] <- gsub("\\.", "-", colnames(RNA_seq_data)[-1])
+
+# head(RNA_seq_data)
+# colnames(RNA_seq_data)
+# str(RNA_seq_data)
+# nrow(RNA_seq_data) #6,149 rows = 6,149 genes
+# View(RNA_seq_data)
+# summary(RNA_seq_data)
+
+## RNA_seq_table is just RNA_seq_data without the gene_name column
+
+# Table contains mixed data types
+# Convert all columns except attrib_name to NUMERIC. 
+RNA_seq_table <- RNA_seq_data[, -1] # Remove gene name column (i.e., the column with the names of the genes). 
+RNA_seq_table <- data.frame(lapply(RNA_seq_table, function(x) as.numeric(as.character(x)))) # Converts to numeric
+
+RNA_seq_table <- as.matrix(RNA_seq_table) # Convert to matrix
+
+class(RNA_seq_table) #Check that it has been converted to a dataframe
+
+# Standardize column names (replace . for - in patient barcodes)
+colnames(RNA_seq_table) <- toupper(
+      gsub("\\.", "-", trimws(colnames(RNA_seq_table)))
+)
+# head(RNA_seq_table)
+# View(RNA_seq_table)
+
+# Save RNA_seq_data Matrix as .csv
+# write.csv(RNA_seq_data, "RNA_seq_data.csv", row.names = FALSE)
+
+# Load RNA_seq_data.csv
+# RNA_seq_data <- read.csv("RNA_seq_data.csv")
+
+# Save RNA_seq_table Matrix as .csv
+# write.csv(RNA_seq_table, "RNA_seq_table.csv", row.names = FALSE)
+
+# Load RNA_seq_table.csv
+# RNA_seq_table <- read.csv("RNA_seq_table.csv")
+
+```
+
+```{r}
+
+library(dplyr)
+library(tidyr)
+
+# CONVERT TIDY FORMAT: #3,233,933 rows?
+# Each row should have one observation (i.e., one gene per row)
+# Each column should have one variable
+
+RNA_seq_tidy <- RNA_seq_data %>%
+      pivot_longer(
+      cols = -gene_name, #preserves the gene name
+      names_to = "sample",
+      values_to = "expression"
+      ) %>%
+      mutate(expression = as.numeric(expression))
+
+# Remove rows with NA's
+RNA_seq_tidy <- na.omit(RNA_seq_tidy)
+
+# Convert column names to lower case (best practice)
+colnames(RNA_seq_tidy) <- tolower(colnames(RNA_seq_tidy))
+
+# Rename "sample" column to "Patient Barcode"
+RNA_seq_tidy <- RNA_seq_tidy %>%
+      rename("patient_barcode" = sample)
+
+# Move 'patient_barcode' column to index 1
+RNA_seq_tidy <- RNA_seq_tidy %>%
+      select("patient_barcode", everything())
+
+# Fix format of patient barcodes from TCGA.A1.A0SD to TCGA-A1-A0SD (consistent across all datasets)
+RNA_seq_tidy$patient_barcode <- gsub("\\.", "-", RNA_seq_tidy$patient_barcode)
+
+colnames(RNA_seq_tidy)
+
+# Change "gene name" to "gene_name"
+# RNA_seq_tidy <- RNA_seq_tidy %>%
+#       rename("gene_name" = 'attrib_name')
+
+# Change "expression" to "expression_log2rsem"
+RNA_seq_tidy <- RNA_seq_tidy %>%
+      rename("expression_log2rsem" = 'expression')
+
+head(RNA_seq_tidy)
+# colnames(RNA_seq_tidy)
+# nrow(RNA_seq_tidy) #3,233,933 rows?
+# View(RNA_seq_tidy)
+
+# RNA-seq now in long/tidy format, i.e.,:
+# - row = patient
+# - columns = gene expression variables (or gene + expression)
+
+# Save Matrix as .csv
+# write.csv(RNA_seq_tidy, "RNA_seq_tidy.csv", row.names = FALSE)
+
+# Load RNA_seq_tidy.csv
+# RNA_seq_tidy <- read.csv("RNA_seq_tidy.csv")
+
+```
+
+----------------------------
+HISTOGRAM OF LOG2-TRANSFORMED GENE EXPRESSION
+
+```{r}
+
+library(ggplot2)
+
+# Plot Log2 Histogram
+log2_histogram <- ggplot(RNA_seq_tidy, aes(x = expression_log2rsem)) +
+                        geom_histogram(bins = 50, fill = "steelblue", color = "black") +
+                        theme_minimal() +
+                        labs(
+                              title = "Distribution of Log2-Transformed Gene Expression",
+                              x = "Log2 Expression (RSEM)",
+                              y = "Frequency"
+                        )
+
+# Print in Report
+print(log2_histogram)
+
+# Save Log2 Histogram
+ggsave(
+      filename = "log2_histogram.png",
+      plot = log2_histogram,
+      width = 8,
+      height = 6,
+      dpi = 300
+)
+
+```
+
+Interpretation: 
+Bimodal distribution = Indicates successful transformation of data. 
+
+----------------------------
+----------------------------
+IDENTIFICATION OF HIGHLY EXPRESSED GENES IN THIS COHORT (NOT NECESSARILY CANCER RELATED)
+
+```{r} 
+
+b_cancer_genes <- (RNA_seq_tidy$gene_name)
+# print(b_cancer_genes) # Prints only column 1 of RNA Seq Data (i.e., the genes involved in BCancer)
+length(b_cancer_genes) 
+
+# Identification of unique genes
+unique_genes <- unique(RNA_seq_tidy$gene_name)
+length(unique_genes) #6, 149 UNIQUE genes
+# print(unique_genes) #they're all unique
+
+# Save Matrix as .csv
+# write.csv(unique_genes, "unique_genes.csv", row.names = FALSE)
+
+# Load unique_genes.csv
+# unique_genes <- read.csv("unique_genes.csv")
+```
+
+MEAN GENE EXPRESSION ANALYSIS AND GENE RANKING
+
+```{r}
+
+library(dplyr)
+
+# Calculate Mean Expression per gene
+mean_gene_expression_dframe <- RNA_seq_data %>%
+      rowwise() %>% 
+      mutate(mean_expression = mean(c_across(-gene_name), na.rm = TRUE)) %>%
+      ungroup() %>%
+      select(gene_name, mean_expression) 
+
+# Top 20 Highly Expressed Breast Cancer Genes
+top_20_exp_genes <- mean_gene_expression_dframe %>%
+      arrange(desc(mean_expression)) %>% # Sort gene expression means in decreasing order
+
+      slice_head(n = 20)
+
+head(top_20_exp_genes)
+# View(top_20_exp_genes)
+# print(top_20_exp_genes)
+
+# Save Matrix as .csv
+# write.csv(top_20_exp_genes, "top_20_exp_genes.csv", row.names = FALSE)
+
+# Load top_20_exp_genes.csv
+# top_20_exp_genes <- read.csv("top_20_exp_genes.csv")
+
+```
+
+VISUALIZATION & INTERPRETATION OF HIGHLY EXPRESSED GENES
+
+```{r}
+
+# Barplot Visualization of the Top 20 Highly Expressed Genes
+library(ggplot2)
+library(dplyr)
+
+# Create Barplot
+top20_exp_plot <- ggplot(top_20_exp_genes, aes(x = reorder(gene_name, mean_expression), y = mean_expression)) +
+            geom_bar(stat = "identity", fill = "limegreen") +
+            coord_flip() + #rearrange the coordinates so that we can easily read the gene names
+            labs(
+                  title = "Top 20 Highest Expressed Breast Cancer Genes",
+                  x = "Genes",
+                  y = "Mean Gene Expression (Log2 RSEM)"
+            ) +
+            theme_minimal() +
+            theme(
+                  axis.text.x = element_text(angle = 0, hjust = 0.5), #x-axis labels
+                  axis.text.y = element_text(size = 10),              #y-axis labels (gene names)
+                  axis.title.x = element_text(size = 12, face = "bold"),
+                  axis.title.y = element_text(size = 12, face = "bold"),
+                  plot.title = element_text(size = 14, face = "bold", hjust = 0.5) 
+      )
+
+# Print in Report
+print(top20_exp_plot)
+
+# Save Top 20 Barplot as .png
+ggsave("Top_20_Highest_Expressed_Breast_Cancer_Genes.png", plot = top20_exp_plot, width = 6, height = 6, dpi = 300)
+
+# Save Top 20 Barplot as R object
+# save(top20_exp_plot, file = "top20_exp_plot.RData")
+
+# Load R Object
+# load("top20_exp_plot.RData")
+
+```
+
+Interpretation:
+      - The following genes are the most highly expressed genes across patients: ASPN, RGS1, SCGB2A2, MMP7, COL10A1, FNDC1, CD93, ADAMDEC1, IGSF6, HLA-DRA, SCGB1D2, CPXM2, KLRB1, F13A1, C10orf81, COMP, CXCL13, MYH11, IRF6, CD34
+      - However, these could be housekeeping genes and other types of genes that may not have any prognostic significance.
+
+----------------------------
+----------------------------
+ALTHOUGH I HAVE IDENTIFIED THE TOP 20 HIGHEST EXPRESSED GENES IN THIS BCANCER STUDY, 
+IT DOESN'T NECESSARILY MEAN THAT THESE TOP 20 GENES HAVE BIOLOGICAL OR PROGNOSTIC IMPORTANCE (I.E., THEY ARE NOT NECESSARILY SURVIVAL-ASSOCIATED GENES).
+THEY COULD BE HOUSEKEEPING GENES, IMMUNE FILTRATION GENES, OR STROMAL GENES THAT ARE 
+HIGHLY EXPRESSED ACROSS ALL TUMORS. 
+
+THE NEXT STEP AFTER THIS EXPLORATORY ANALYSIS STEP IS TO PREP. THE DATA FOR PCA & LIMMA, THEN DO SURVIVAL ANALYSIS
+----------------------------
+DATA PREPARATION FOR DOWNSTREAM MODELING. 
+
+```{r}
+
+# Create matrix with expression values only (no gene name column)
+lim_matrix <- as.matrix(RNA_seq_data[, -1])
+rownames(lim_matrix) <- RNA_seq_data$gene_name
+
+pam50 <- factor(final_aggregated_patient_data$pam50) #subset the PAM50 column from final_aggregated_patient_data and convert to factor (so that R knows we are dealing with categorical data, as opposed to continuous data).
+names(pam50) <- final_aggregated_patient_data$patient_barcode #assign PAM50 labels to respective patient barcodes (LumA, LumB, HER2, Basal)
+
+# Remove NA's from PAM50 patients
+pam50 <- pam50[!is.na(pam50)]
+
+# Match PAM50 samples with respective RNA-seq data via patient barcode
+common_samples <- intersect(colnames(lim_matrix), names(pam50)) #common samples = patients that have both PAM50 labels and RNA_seq data
+lim_matrix <- lim_matrix[, common_samples]
+pam50 <- pam50[common_samples]
+pam50 <- droplevels(pam50) # Remove unused subtypes from the data. 
+
+head(lim_matrix)
+# View(lim_matrix)
+ncol(lim_matrix)  #445 - Not all patients have both PAM50 data and RNA_seq data. 
+
+# Align columns
+all(colnames(lim_matrix) == names(pam50))
+
+# Create Design Matrix for limma
+design <- model.matrix(~0 + pam50)
+colnames(design) <- levels(pam50)
+rownames(design) <- names (pam50) #add patient barcode to design matrix
+
+head(design)
+# View(design)
+# nrow(design) #445 - Not all patients have both PAM50 data and RNA_seq data.
+
+## Remember for limma, ncol(lim_matrix) == nrow(design)
+
+# Save design_matrix as .csv
+# write.csv(design, "design_matrix.csv", row.names = TRUE)
+
+# Load design_matrix
+# design <- read.csv("design_matrix.csv")
+
+# Save lim_matrix as .csv
+# write.csv(lim_matrix, "lim_matrix.csv", row.names = TRUE)
+
+# Load lim_matrix
+# lim_matrix <- read.csv("lim_matrix.csv")
+
+```
+
+----------------------------
+PRINCIPAL COMPONENT ANALYSIS(PCA) ON RNA-SEQ DATA (PCA REDUCES HIGH DIMENSIONALITY DATA).
+
+```{r}
+
+# Calculate gene variance across all patient samples
+gene_variance <- apply(lim_matrix, 1, var)
+
+# Select the Top 500 most variable genes
+top_genes <- names(sort(gene_variance, decreasing = TRUE))[1:500]
+
+# Transpose matrix so rows = samples and columns = genes
+pca_input_top <- t(lim_matrix[top_genes, ])
+
+pca_top <- prcomp(pca_input_top, scale. = TRUE)
+
+# Convert output of PCA to a dataframe
+pca_top_df <- as.data.frame(pca_top$x)
+
+# Add pam50 labels
+pca_top_df$PAM50 <- pam50
+
+#Create PCA Plot of Top 500 Variable Genes
+pca_plot <- ggplot(pca_top_df, aes(PC1, PC2, color = PAM50)) +
+                  geom_point(size = 2) +
+                  theme_minimal() +
+                  labs(title = "PCA of Top 500 Variable Genes")
+
+# Print in Report
+print(pca_plot)
+
+# Save PCA Plot of Top 500 Variable Genes
+ggsave("PCA Plot.png", plot = pca_plot, width = 8, height = 6, dpi = 300)
+
+```
+
+Interpretation of PCA Plot of Top 500 Variable Genes:
+
+PCA plot show how the samples cluster based on the top 100 most variable genes.
+Colours represent the PAM50 subtypes.
+      - Strong separation of Basal subtype (red) from the other subtypes = indicates that Basal tumors have a distinct gene expression profile. Low PC1 values (i.e., tight clustering on the left)
+      - LumA (teal) and LumB (purple) show substantial overlapping = indicates biological similarity. Higher PCA (clustering on the right side).
+      - HER2 (green) Less tightly clustered. Spread out between Basal and Luminal groups = suggests greater heterogeneity or mixed expression patterns.
+
+PC1 is the largest source of variation (by nature of PCA)
+
+----------------------------
+
+SCREE PLOT 
+
+```{r}
+
+# Calculate proportion of variance
+var_explained <- pca_top$sdev^2 / sum(pca_top$sdev^2)
+
+# Scree dataframe
+scree_df <- data.frame(
+      PC = 1:10, #create dataframe of first 10 principal components.
+      Variance = var_explained[1:10]
+)
+
+# Create Scree Plot
+scree_plot <- ggplot(scree_df, aes(x = PC, y = Variance)) +
+      geom_line() +
+      geom_point() +
+      labs(
+            title = "Scree Plot",
+            x = "Principal Component",
+            y = "Variance Explained"
+      ) +
+      theme_minimal()
+
+# Print in Report
+print(scree_plot)
+
+# Save Scree Plot
+ggsave("Scree Plot.png", plot = scree_plot, width = 8, height = 6, dpi = 300)
+
+```
+
+Interpretation of Scree plot:
+      - PC1 = captures the largest source of variation = suggests biological separation of subtypes.
+      - PC2 & PC3 = captures smaller sources of variation (likely differences within Luminal and HER2 subtypes)
+
+----------------------------
+----------------------------
+DIFFERENTIAL GENE EXPRESSION ANALYSIS WITH LIMMA
+
+```{r}
+
+library(limma)
+library(tibble)
+
+# Fit the linear model
+fit <- lmFit(lim_matrix, design) #lmFit performs a linear regression on each of the 6149 genes to find differences in gene expression across PAM50 subtypes. 
+fit <- eBayes(fit)
+
+```
+
+SUBTYPE-SPECIFIC DIFFERENTIAL EXPRESSION
+
+```{r}
+
+library(limma)
+
+head(fit$coefficients) #Gene expression estimates per subtype
+
+# Create a ranked table of the genes that are most likely to be differentially expressed.
+diff_exp_results <- topTable(fit, number = Inf, adjust.method = "BH") #BH = Benjamini-Hochberg procedure = controls false discovery rate (i.e., the proportion of false positives among significant genes)
+
+# Convert rownames to a column called gene names
+diff_exp_results <- rownames_to_column(diff_exp_results, var = "gene_name")
+
+head(diff_exp_results)
+# View(diff_exp_results)
+
+# Differentially Expressed Genes (FDF < 0.05)
+sum(diff_exp_results$adj.P.Val < 0.05) #6, 047 #suggests that all but 102 genes are differentially expressed. 
+## see next code block for calculation of genes differentially expressed across subtype contrasts (FDF < 0.05)
+
+# 1,565 - 4,348 significantly different genes per subtype comparison (FDR <0.05). 
+
+# Save subtype specific differential expression results as .csv
+# write.csv(diff_exp_results, "diff_exp_results.csv", row.names = TRUE)
+
+# Load diff_exp_results.csv
+# diff_exp_results <- read.csv("diff_exp_results.csv")
+
+```
+
+PAIR-WISE COMPARISONS OF GENE EXPRESSION.
+
+      - Basal_vs_LumA
+      - Basal_vs_LumB
+      - Basal_vs_Her2
+      - LumA_vs_LumB *
+      - LumA_vs_Her2 
+      - LumB_vs_Her2
+
+```{r}
+
+# Pair-wise PAM50 subtype contrasts
+contrast.matrix <- makeContrasts(
+      LumA_vs_Basal = LumA - Basal,
+      LumB_vs_Basal = LumB - Basal,
+      Her2_vs_Basal = Her2 - Basal,
+      LumA_vs_LumB = LumA - LumB,
+      LumA_vs_Her2 = LumA - Her2,
+      LumB_vs_Her2 = LumB - Her2,
+      levels = design
+)
+
+# contrast.matrix <- makeContrasts(
+#       LumA_vs_Basal = pam50LumA - pam50Basal,
+#       LumB_vs_Basal = pam50LumB - pam50Basal,
+#       Her2_vs_Basal = pam50Her2 - pam50Basal,
+#       LumA_vs_LumB = pam50LumA - pam50LumB,
+#       LumA_vs_Her2 = pam50LumA - pam50Her2,
+#       LumB_vs_Her2 = pam50LumB - pam50Her2,
+#       levels = design
+# )
+
+fit2 <- contrasts.fit(fit, contrast.matrix) #apply contrasts
+fit2 <- eBayes(fit2) #stabilizes gene variance estimates across all genes, thus improving statistical power = more reliable p-values.
+
+#F-tests
+diff_exp_pair_results <- topTableF(fit2, number = Inf) #shows the total # of genes differentially expressed across all subtypes. topTableF performs ANOVA-style F-test across all PAM50 subtypes. 
+sum(diff_exp_pair_results$adj.P.Val < 0.05) #5,100 of 6,149 genes total.
+
+head(diff_exp_pair_results)
+# View(diff_exp_pair_results)
+
+# Total # of genes differentially expressed across subtype contrasts.
+LumA_vs_Basal_results <- topTable(fit2, coef = "LumA_vs_Basal", number = Inf)
+LumB_vs_Basal_results <- topTable(fit2, coef = "LumB_vs_Basal", number = Inf)
+Her2_vs_Basal_results <- topTable(fit2, coef = "Her2_vs_Basal", number = Inf)
+LumA_vs_LumB_results <- topTable(fit2, coef = "LumA_vs_LumB", number = Inf)
+LumA_vs_Her2_results <- topTable(fit2, coef = "LumA_vs_Her2", number = Inf)
+LumB_vs_Her2_results <- topTable(fit2, coef = "LumB_vs_Her2", number = Inf)
+
+# Calculation of genes differentially expressed across subtype contrasts (FDF < 0.05)
+sum(LumA_vs_Basal_results$adj.P.Val < 0.05) #4,348 genes differentially expressed across LumA_vs_Basal
+sum(LumB_vs_Basal_results$adj.P.Val < 0.05) #3,740 genes differentially expressed across LumB_vs_Basal
+sum(Her2_vs_Basal_results$adj.P.Val < 0.05) #2,609 genes differentially expressed across Basal_vs_Her2
+sum(LumA_vs_LumB_results$adj.P.Val < 0.05) #2,687 genes differentially expressed across LumA_vs_LumB
+sum(LumA_vs_Her2_results$adj.P.Val < 0.05) #2,564 genes differentially expressed across LumA_vs_Her2
+sum(LumB_vs_Her2_results$adj.P.Val < 0.05) #1,565 genes differentially expressed across LumB_vs_Her2
+
+# Save subtype specific differential expression pair-wise results as .csv
+# write.csv(diff_exp_pair_results, "diff_exp_pair_results.csv", row.names = TRUE)
+
+# Load diff_exp_pair_results.csv
+# diff_exp_pair_results <- read.csv("diff_exp_pair_results.csv")
+
+```
+
+----------------------------
+----------------------------
+PAIR-WISE CONTRAST MATRICES
+
+LumA v. Basal Contrast Matrix
+```{r}
+
+lumA_basal <- topTable(fit2, coef = "LumA_vs_Basal", number = Inf)
+
+# Add gene name to lumA_basal matrix
+lumA_basal <- lumA_basal %>% rownames_to_column(var = "gene_name")
+
+head(lumA_basal)
+# View(lumA_basal)
+
+# Save lumA_basal_matrix as .csv
+write.csv(lumA_basal, "lumA_basal_matrix.csv", row.names = TRUE)
+
+# Load lumA_basal_matrix.csv
+# lumA_basal <- read.csv("lumA_basal_matrix.csv")
+
+```
+
+Interpretation:
+      - Positive logFC (e.g., logFC = 2), means the gene is expressed 4x more in LumA tumors than Basal tumors 
+      - Negative logFC (e.g., logFC = -2), means gene is express 4x more in Basal tumors than LumA tumors
+
+----------------------------
+LumA v. Her2 Contrast Matrix
+```{r}
+
+lumA_Her2 <- topTable(fit2, coef = "LumA_vs_Her2", number = Inf)
+
+#Add gene name to lumA_Her2 matrix
+lumA_Her2 <- lumA_Her2 %>% rownames_to_column(var = "gene_name")
+
+head(lumA_Her2)
+# View(lumA_Her2)
+
+# Save lumA_her2_matrix as .csv
+write.csv(lumA_Her2, "lumA_her2_matrix.csv", row.names = TRUE)
+
+# Load lumA_her2_matrix.csv
+# lumA_Her2 <- read.csv("lumA_her2_matrix.csv")
+
+```
+
+Interpretation:
+      - Positive logFC = higher gene expression in LumA. 
+      - Negative logFC = higher gene expression in Her2.
+
+----------------------------
+LumB v. Basal Contrast Matrix
+```{r}
+
+lumB_basal <- topTable(fit2, coef = "LumB_vs_Basal", number = Inf)
+
+#Add gene name to lumB_basal matrix
+lumB_basal <- lumB_basal %>% rownames_to_column(var = "gene_name")
+
+head(lumB_basal)
+# View(lumB_basal)
+
+# Save lumA_her2_matrix as .csv
+write.csv(lumB_basal, "lumB_basal_matrix.csv", row.names = TRUE)
+
+# Load lumB_basal_matrix.csv
+# lumB_basal <- read.csv("lumB_basal_matrix.csv")
+
+```
+
+Interpretation:
+      - Positive logFC = higher gene expression in LumB.
+      - Negative logFC = higher gene expression in Basal.
+
+----------------------------
+Her2 vs. Basal Contrast Matrix
+```{r}
+
+Her2_basal <- topTable(fit2, coef = "Her2_vs_Basal", number = Inf)
+
+# Add gene name to Her2_basal matrix
+Her2_basal <- Her2_basal %>% rownames_to_column(var = "gene_name")
+
+head(Her2_basal)
+# View(Her2_basal)
+
+# Save Her2_Basal_matrix as .csv
+write.csv(Her2_basal, "Her2_vs_Basal_matrix.csv", row.names = TRUE)
+
+# Load Her2_vs_Basal_matrix.csv
+# Her2_vs_Basal <- read.csv("Her2_vs_Basal_matrix.csv")
+
+```
+
+Interpretation:
+      - Positive logFC = higher gene expression in Her2.
+      - Negative logFC = higher gene expression in Basal.
+
+----------------------------
+LumB v. Her2 Contrast Matrix
+```{r}
+
+# lumB_basal contrast
+lumB_Her2 <- topTable(fit2, coef = "LumB_vs_Her2", number = Inf)
+
+# Add gene name to lumA_Her2 matrix
+lumB_Her2 <- lumB_Her2 %>% rownames_to_column(var = "gene_name")
+
+head(lumB_Her2)
+# View(lumB_Her2)
+
+# Save lumA_her2_matrix as .csv
+write.csv(lumB_Her2, "lumB_Her2.csv", row.names = TRUE)
+
+# Load lumB_Her2_matrix.csv
+# lumB_Her2 <- read.csv("lumB_Her2_matrix.csv")
+
+```
+
+Interpretation:
+      - Positive logFC = higher gene expression in LumB.
+      - Negative logFC = higher gene expression in Her2.
+
+----------------------------
+----------------------------
+DIFFERENTIAL EXPRESSION FILTERING & IDENTIFICATION OF THE BIOLOGICALLY & STATISTICALLY SIGNIFICANT GENES
+
+(i.e., significantly differentially expressed (DE) genes with False Discovery Rate (FDR) <0.05).
+FDR < 0.05 limits false positives (i.e., genes that appear significant by chance, but are not).
+This is done by filtering the DE genes by adjusted p-value. 
+
+----------------------------
+GENES UPREGULATED IN LumA SUBTYPE
+
+```{r}
+
+lumA_sig_genes <- lumA_basal %>%
+      filter(adj.P.Val < 0.05 & abs(logFC) > 1)
+
+head(lumA_sig_genes)
+# nrow(lumA_sig_genes) #654 significant genes
+# View(lumA_sig_genes)
+
+# Upregulated genes in LumA subtype
+lumA_upreg_genes <- lumA_sig_genes %>%
+      filter(logFC > 1)
+
+head(lumA_upreg_genes, 10) #Top 10 lumA upregulated genes
+# nrow(lumA_upreg_genes) #337 upregulated genes in LumA subtype
+# View(lumA_upreg_genes)
+# print(lumA_upreg_genes)
+
+# Save Upregulated LumA genes as .csv
+# write.csv(lumA_upreg_genes, "lumA_upreg_genes.csv", row.names = TRUE)
+
+# Load lumA_upreg_genes.csv
+# lumA_upreg_genes <- read.csv("lumA_upreg_genes.csv")
+
+```
+
+Interpreation: FOXA1, MLPH, CA12, TBC1D9 & SLC44A4 are upregulated in luminal subtypes (both lumA & lumB) in comparison to other subtypes (Basal and Her2).
+
+----------------------------
+GENES UPREGULATED IN LumB SUBTYPE 
+
+```{r}
+
+# Differential expression (DE) results for lumB vs. Basal subtypes
+lumB_basal <- topTable(fit2, coef = "LumB_vs_Basal", number = Inf) %>%
+      rownames_to_column(var = "gene_name")
+
+# Filter for significant DE genes
+lumB_sig_genes <- lumB_basal %>%
+      filter(adj.P.Val < 0.05 & abs(logFC) > 1)
+
+lumB_upreg_genes <- lumB_sig_genes %>% filter(logFC >1)
+
+head(lumB_upreg_genes, 10) #top 10 lumB upregulated genes
+# View(lumB_upreg_genes)
+# nrow(lumB_upreg_genes) #248 upregulated genes in lumB subtype
+# print(lumB_upreg_genes)
+
+# Save Upregulated LumB genes as .csv
+# write.csv(lumB_upreg_genes, "lumB_upreg_genes.csv", row.names = TRUE)
+
+# Load lumB_upreg_genes.csv
+# lumB_upreg_genes <- read.csv("lumB_upreg_genes.csv")
+
+```
+
+Interpretation: FOXA1, MLPH, CA12, TBC1D9 & SLC44A4 are upregulated in luminal subtypes (both lumA & lumB) in comparison to other subtypes (Basal and Her2).
+
+----------------------------
+GENES UPREGULATED IN BASAL SUBTYPE 
+
+```{r}
+
+basal_upreg_genes <- lumA_basal %>%
+      filter(logFC < -1)
+
+# lumA_sig_genes <- lumA_basal %>%
+#       filter(adj.P.Val < 0.05 & abs(logFC) > 1)
+
+# basal_upreg_genes <- lumA_sig_genes %>%
+#       filter(logFC < -1)
+
+head(basal_upreg_genes, 10) #top 10 basal upregulated genes
+# View(basal_upreg_genes)
+# nrow(basal_upreg_genes) #317 upregulated genes in Basal subtype
+# print(basal_upreg_genes)
+
+# Save Upregulated Basal Genes as .csv
+# write.csv(basal_upreg_genes, "basal_upreg_genes_matrix.csv", row.names = TRUE)
+
+# Load basal_upreg_genes_matrix.csv
+# basal_upreg_genes <- read.csv("basal_upreg_genes_matrix.csv")
+
+```
+
+Interpretation: ROPN1, PPP1R14C, HORMAD1 & UGT8 are upregulated in Basal tumors in comparison to luminal subtypes
+
+----------------------------
+GENES UPREGULATED IN HER2 SUBTYPE 
+
+```{r}
+
+lumA_her2_sig_genes <- lumA_Her2 %>%
+      filter(adj.P.Val < 0.05 & abs(logFC) >1)
+
+her2_upreg_genes <- lumA_her2_sig_genes %>%
+      filter(logFC < -1)
+
+head(her2_upreg_genes, 10) #Top 10 Her2 upregulated genes
+# View(her2_upreg_genes)
+# nrow(her2_upreg_genes) #114 upregulated genes in Her2 subtype
+# print(her2_upreg_genes)
+
+# Save Upregulated Basal Genes as .csv
+write.csv(her2_upreg_genes, "her2_upreg_genes.csv", row.names = TRUE)
+
+# Load her2_upreg_genes.csv
+# her2_upreg_genes <- read.csv("her2_upreg_genes.csv")
+
+```
+
+Interpretation: GRB7, C17orf37, GSDML, RRM2, PSMD3 & PNMT are top upregulated in Her2 tumors compared to lumA subtype
+
+----------------------------
+----------------------------
+VOLCANO PLOTS TO VISUALIZE GENES THAT ARE UPREGULATED AND DOWNREGULATED ACROSS SUBTYPES.
+
+----------------------------
+LumA v. BASAL VOLCANO PLOT
+
+```{r}
+
+# Add Colour for Each Category (Upregulated, Downregulated, Not Significant)
+lumA_basal <- lumA_basal %>%
+      mutate(
+            significance = case_when(
+                  adj.P.Val < 0.05 & logFC > 1 ~ "Upregulated",
+                  adj.P.Val < 0.05 & logFC < -1 ~ "Downregulated",
+                  TRUE                          ~ "Not Significant"
+            )
+      )
+
+# Subset lumA_basal Genes
+top_genes_lumA_basal <- lumA_basal %>%
+      arrange(adj.P.Val) %>%
+      slice(c(1:10, (n()-9):n()))
+
+# Create Coloured LumA v. Basal Volcano Plot
+lumA_vs_basal_volcano_plot <- ggplot(lumA_basal,
+      aes(x = logFC, y = -log10(adj.P.Val), color = significance)) +
+      geom_point(alpha = 0.6) +
+      scale_colour_manual(values = c(
+            "Upregulated" = "red",
+            "Downregulated" = "blue",
+            "Not Significant" = "grey"
+      )) +
+
+      geom_text_repel(data = top_genes_lumA_basal, aes(label = gene_name), color = "black") +
+      geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "black") +
+      geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black") +
+      annotate("text", x = Inf, y = -log10(0.05), label = "p-value = 0.05", hjust = 1.1, vjust = -1.0, color = "black", size = 4) +            
+      theme_minimal() +
+      labs(
+            title = "LumA v. Basal Volcano Plot",
+            x = "Log2 Fold Change",
+            y = "-Log10 Adjusted P-value",
+            color = "Gene Status"
+      )
+
+# Print in Report
+print(lumA_vs_basal_volcano_plot)
+
+#Save LumA v. Basal Volcano Plot
+ggsave(      
+      filename = "lumA_vs_basal_volcano_plot.png",
+      plot = lumA_vs_basal_volcano_plot,
+      width = 8, 
+      height = 6,
+      units = "in",
+      dpi = 300, 
+      bg = "white"
+)
+
+```
+
+Interpretation of lumA vs. Basal Volcano Plot:
+      - Right side (positive values) = genes upregulated in luminal tumors (lumA and LumB) = FOXA1, MLPH, CA12, TBC1D9, SLC44A4, DNALI1
+      - Left side (negative values)= genes upregulated in Basal tumors = ROPN1, PPP1R14C, HORMAD1, UGT8
+      - Top = statistically significant genes = ROPN1, PPP1R14C, HORMAD1, UGT8, FOXA1, MLPH, CA12, TBC1D9, SLC44A4, DNALI1
+      - Bottom = genes that are NOT statistically significant = not labeled on plot.
+
+----------------------------
+LumA v. HER2 VOLCANO PLOT
+
+```{r}
+
+library(ggplot2)
+library(ggrepel)
+library(dplyr)
+
+# lumA_Her2 Contrast
+lumA_Her2 <- topTable(fit2, coef = "LumA_vs_Her2", number = Inf)
+
+# Add Gene Name to lumA_Her2 Matrix
+lumA_Her2 <- lumA_Her2 %>% rownames_to_column(var = "gene_name")
+
+# Add Colour For Each Category (Upregulated, Downregulated, Not Significant)
+lumA_Her2 <- lumA_Her2 %>%
+      mutate(
+            significance = case_when(
+                  adj.P.Val < 0.05 & logFC > 1 ~ "Upregulated",
+                  adj.P.Val < 0.05 & logFC < -1 ~ "Downregulated",
+                  TRUE                          ~ "Not Significant"
+            )
+      )
+
+# Subset LumA_Her2 Genes
+top_genes_lumA_her2 <- lumA_Her2 %>%
+      arrange(adj.P.Val) %>%
+      slice(c(1:10, (n()-9):n()))
+
+# Create Coloured LumA v. Her2 Volcano Plot
+lumA_vs_her2_volcano_plot <- ggplot(lumA_Her2,
+      aes(x = logFC, y = -log10(adj.P.Val), color = significance)) +
+      geom_point(alpha = 0.6) +
+      scale_colour_manual(values = c(
+            "Upregulated" = "red",
+            "Downregulated" = "blue",
+            "Not Significant" = "grey"
+      )) +
+
+      geom_text_repel(data = top_genes_lumA_her2, aes(label = gene_name), color = "black") +
+      geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "black") +
+      geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black") +
+      annotate("text", x = Inf, y = -log10(0.05), label = "p-value = 0.05", hjust = 1.1, vjust = -1.0, color = "black", size = 4) +            
+      theme_minimal() +
+      labs(
+            title = "LumA v. Her2 Volcano Plot",
+            x = "Log2 Fold Change",
+            y = "-Log10 Adjusted P-value",
+            color = "Gene Status"
+      )
+
+# Print in Report
+lumA_vs_her2_volcano_plot
+
+#Save LumA v. Her2 Volcano Plot
+ggsave(      
+      filename = "lumA_vs_her2_volcano_plot.png",
+      plot = lumA_vs_her2_volcano_plot,
+      width = 8, 
+      height = 6,
+      units = "in",
+      dpi = 300, 
+      bg = "white"
+)
+
+```
+
+
+Interpetation of LumA vs. Her2 Volcano Plot:
+      - Right side (positive values) = genes upregulated in LumA = BCL2, SERPINA3, GREB1, MAPT
+      - Left side (negative values)= genes upregulated in Her 2 tumors = GRB7, PNMT, RRM2, GSDML, C17orf37, RSMD3, PSMD3
+
+----------------------------
+LumB v. BASAL VOLCANO PLOT
+
+```{r}
+
+# LumB_basal Contrast
+lumB_basal <- topTable(fit2, coef = "LumB_vs_Basal", number = Inf)
+
+# Add Gene Name to lumB_basal Matrix
+lumB_basal <- lumB_basal %>% rownames_to_column(var = "gene_name")
+
+# Add Colour for Each Category (Upregulated, Downregulated, Not Significant)
+lumB_basal <- lumB_basal %>%
+      mutate(
+            significance = case_when(
+                  adj.P.Val < 0.05 & logFC > 1 ~ "Upregulated",
+                  adj.P.Val < 0.05 & logFC < -1 ~ "Downregulated",
+                  TRUE                          ~ "Not Significant"
+            )
+      )
+
+# Subset LumB_basal Genes
+top_genes_lumB_basal <- lumB_basal %>%
+      arrange(adj.P.Val) %>%
+      slice(c(1:10, (n()-9):n()))
+
+# Create Coloured LumB v. Basal Volcano Plot
+lumB_vs_basal_volcano_plot <- ggplot(lumB_basal,
+      aes(x = logFC, y = -log10(adj.P.Val), color = significance)) +
+      geom_point(alpha = 0.6) +
+      scale_colour_manual(values = c(
+            "Upregulated" = "red",
+            "Downregulated" = "blue",
+            "Not Significant" = "grey"
+      )) +
+
+      geom_text_repel(data = top_genes_lumB_basal, aes(label = gene_name), color = "black") +
+      geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "black") +
+      geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black") +
+      annotate("text", x = Inf, y = -log10(0.05), label = "p-value = 0.05", hjust = 1.1, vjust = -1.0, color = "black", size = 4) +            
+      theme_minimal() +
+      labs(
+            title = "LumB v. Basal Volcano Plot",
+            x = "Log2 Fold Change",
+            y = "-Log10 Adjusted P-value",
+            color = "Gene Status"
+      )
+
+# Print in Report
+lumB_vs_basal_volcano_plot
+
+#Save LumB v. Basal Volcano Plot
+ggsave(      
+      filename = "lumB_vs_basal_volcano_plot.png",
+      plot = lumB_vs_basal_volcano_plot,
+      width = 8, 
+      height = 6,
+      units = "in",
+      dpi = 300, 
+      bg = "white"
+)
+
+```
+
+Interpretation of LumB vs. Basal Volcano Plot:
+
+      - Right side (positive values) = genes upregulated in LumB tumors = FOXA1, MLPH, CA12, TBC1D9, SLC44A4, LRFN2
+      - Left side (negative values) = genes upregulated in Basal tumors = ROPN1, PPP1R14C, ROPN1B, KRT16
+
+----------------------------
+HER2 v. BASAL VOLCANO PLOT
+
+```{r}
+
+# Her2_basal Contrast
+Her2_basal <- topTable(fit2, coef = "Her2_vs_Basal", number = Inf)
+
+# Add Gene Name to Her2_basal Matrix
+Her2_basal <- Her2_basal %>% rownames_to_column(var = "gene_name")
+
+# Add Colour for Each Category (Upregulated, Downregulated, Not Significant)
+Her2_basal <- Her2_basal %>%
+      mutate(
+            significance = case_when(
+                  adj.P.Val < 0.05 & logFC > 1 ~ "Upregulated",
+                  adj.P.Val < 0.05 & logFC < -1 ~ "Downregulated",
+                  TRUE                          ~ "Not Significant"
+            )
+      )
+
+# Subset Her2_basal Genes
+top_genes_Her2_basal <- Her2_basal %>%
+      arrange(adj.P.Val) %>%
+      slice(c(1:10, (n()-9):n()))
+
+# Create Coloured Her2 v. Basal Volcano Plot
+Her2_vs_basal_volcano_plot <- ggplot(Her2_basal,
+      aes(x = logFC, y = -log10(adj.P.Val), color = significance)) +
+      geom_point(alpha = 0.6) +
+      scale_colour_manual(values = c(
+            "Upregulated" = "red",
+            "Downregulated" = "blue",
+            "Not Significant" = "grey"
+      )) +
+
+      geom_text_repel(data = top_genes_Her2_basal, aes(label = gene_name), color = "black") +
+      geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "black") +
+      geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black") +
+      annotate("text", x = Inf, y = -log10(0.05), label = "p-value = 0.05", hjust = 1.1, vjust = -1.0, color = "black", size = 4) +            
+      theme_minimal() +
+      labs(
+            title = "Her2 v. Basal Volcano Plot",
+            x = "Log2 Fold Change",
+            y = "-Log10 Adjusted P-value",
+            color = "Gene Status"
+      )
+
+# Print in Report
+print(Her2_vs_basal_volcano_plot)
+
+#Save Her2 v. Basal Volcano Plot
+ggsave(      
+      filename = "Her2_vs_basal_volcano_plot.png",
+      plot = Her2_vs_basal_volcano_plot,
+      width = 8, 
+      height = 6,
+      units = "in",
+      dpi = 300, 
+      bg = "white"
+)
+
+```
+
+Interpretation of Her2 vs. Basal Volcano Plot:
+      - Right side (positive values) = genes upregulated in Her2 tumors = FOXA1, MLP, LRFN2, SLC44A4, C17orf37, GPR160
+      - Left side (positive values) = genes upregulated in Basal tumors = ROPN1, ROPN1B, HORMAD1, UGT8
+
+----------------------------
+LumB v. Her2 VOLCANO PLOT
+
+```{r}
+
+# LumB_Her2 Contrast
+LumB_Her2 <- topTable(fit2, coef = "LumB_vs_Her2", number = Inf)
+
+# Add Gene Name to LumB_Her2 Matrix
+LumB_Her2 <- LumB_Her2 %>% rownames_to_column(var = "gene_name")
+
+# Add Colour for Each Category (Upregulated, Downregulated, Not Significant)
+LumB_Her2 <- LumB_Her2 %>%
+      mutate(
+            significance = case_when(
+                  adj.P.Val < 0.05 & logFC > 1 ~ "Upregulated",
+                  adj.P.Val < 0.05 & logFC < -1 ~ "Downregulated",
+                  TRUE                          ~ "Not Significant"
+            )
+      )
+
+# Subset LumB_Her2 Genes
+top_genes_LumB_Her2 <- LumB_Her2 %>%
+      arrange(adj.P.Val) %>%
+      slice(c(1:10, (n()-9):n()))
+
+# Create Coloured LumB v. Her2 Volcano Plot
+LumB_vs_Her2_volcano_plot <- ggplot(LumB_Her2,
+      aes(x = logFC, y = -log10(adj.P.Val), color = significance)) +
+      geom_point(alpha = 0.6) +
+      scale_colour_manual(values = c(
+            "Upregulated" = "red",
+            "Downregulated" = "blue",
+            "Not Significant" = "grey"
+      )) +
+
+      geom_text_repel(data = top_genes_LumB_Her2, aes(label = gene_name), color = "black") +
+      geom_vline(xintercept = c(-1, 1), linetype = "dashed", color = "black") +
+      geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "black") +
+      annotate("text", x = Inf, y = -log10(0.05), label = "p-value = 0.05", hjust = 1.1, vjust = -1.0, color = "black", size = 4) +            
+      theme_minimal() +
+      labs(
+            title = "LumB v. Her2 Volcano Plot",
+            x = "Log2 Fold Change",
+            y = "-Log10 Adjusted P-value",
+            color = "Gene Status"
+      )
+
+# Print in Report
+print(LumB_vs_Her2_volcano_plot)
+
+#Save LumB v. Her2 Volcano Plot
+ggsave(      
+      filename = "LumB_vs_Her2_volcano_plot.png",
+      plot = LumB_vs_Her2_volcano_plot,
+      width = 8, 
+      height = 6,
+      units = "in",
+      dpi = 300, 
+      bg = "white"
+)
+
+```
+
+Interpretation of LumB vs. Her2 Volcano Plot:
+      - Right side (positive values) = genes upregulated in lumB tumors = C6orf211, GREB, PARD6B, PPM1J
+      - Left side (negative values) = genes upregulated in Her2 tumors = GRB7, CLCA2, PNMT, C17orf37, ATP13A5, AKR1B10
+
+----------------------------
+----------------------------
+HEATMAP OF GENE EXPRESSION PATTERNS/HEATMAP OF TOP VARIABLE GENES ACROSS PAM50 SUBTYPES.
+
+```{r}
+
+#install.packages("pheatmap")
+library(pheatmap)
+library(RColorBrewer)
+
+# Calculate the variance for each gene
+gene_variances <- apply(lim_matrix, 1, var, na.rm = TRUE)
+
+# Select the top 500 most variable genes
+top_var_genes <- names(sort(gene_variances, decreasing = TRUE))[1:500]
+
+# Subset the top 100 variable genes
+heatmap_data <- lim_matrix[top_var_genes, ]
+
+# Scale the data by standardizing each gene (row) - enhances visualization
+heatmap_scaled <- t(scale(t(heatmap_data)))
+
+# Add pam50 annotations
+annotation_col <- data.frame(PAM50 = pam50)
+rownames(annotation_col) <- colnames(heatmap_scaled)
+
+# Plot & Save the Top 500 Heatmap
+png("Heatmap_of_Top_500_Variable_Genes.png", width = 800, height = 600, res = 150)
+heatmap_plot <- pheatmap(
+                        heatmap_scaled,
+                        annotation_col = annotation_col,
+                        show_rownames = FALSE,
+                        show_colnames = FALSE,
+                        clustering_method = "complete",
+                        scale = "none",
+                        main = "Heatmap of Top 500 Variable Genes Across PAM50 Subtypes"
+                  )
+dev.off()
+
+# Print in Report
+print(heatmap_plot)
+
+```
+
+Interpretation: 
+      - Clear subtype-specific clustering (i.e., variable genes are clustered across distinct breast cancer subtypes).
+      - Clusters with higher expression = yellow/red.
+      - Clusters with lower expression = blue.
+      - Basal subtype is seemingly more tightly grouped together (suggesting distinct gene expression).
+      - LumA and LumB appear to be overlapping/intermixed in some regions = suggesting biological similarity.
+      - Similar expression patterns across groups of genes suggest co-regulated gene sets and/or shared biological pathways. 
+
+----------------------------
+----------------------------
+MERGE GENE EXPRESSION WITH SURVIVAL DATA
+      - Rows = patient
+      - Columns = gene expression + survival data
+
+```{r}
+
+# Merge RNA-seq data and Survival data
+gene_expr <- as.data.frame(t(RNA_seq_data))
+colnames(gene_expr) <- RNA_seq_data$gene_name #preseve gene names 
+gene_expr$patient_barcode <- rownames(gene_expr)
+
+survival_dataset <- dplyr::left_join(
+      final_aggregated_patient_data,
+      gene_expr,
+      by = "patient_barcode"
+)
+
+# View(as.data.frame(survival_dataset))
+# head(survival_dataset)
+# View(survival_dataset)
+# "overall_survival" %in% colnames(survival_dataset) #true
+# "status" %in% colnames(survival_dataset) #true
+# "demographic.vital_status" %in% colnames(survival_dataset) #true
+# "demographic.days_to_death" %in% colnames(survival_dataset) #true
+
+# Save survival_dataset as .csv
+write.csv(survival_dataset, "survival_dataset.csv", row.names = TRUE)
+
+# Load survival_dataset.csv
+# survival_dataset <- read.csv("survival_dataset.csv")
+
+```
+
+CREATE COLUMNS FOR SURVIVAL ANALYSIS
+
+      - Censoring Status = values in this column are either:
+            - 1 (i.e., Event Happened (i.e., Death)) #151
+            - 0 (i.e., Censored (i.e., Alive)) #843
+      - Time-To-Event = from the start time (i.e., time of diagnosis), to the end time (i.e., time when event (death) occured or censoring (i.e., last follow-up))
+
+```{r}
+
+library(dplyr)
+
+survival_dataset <- survival_dataset %>%
+      mutate(
+            follow_up_days = as.numeric(diagnoses.days_to_last_follow_up), #for patients who are still alive/censored
+            death_days = as.numeric(demographic.days_to_death), #for patients who have died
+            time_to_event = ifelse(!is.na(death_days), death_days, follow_up_days),
+            event_status = as.numeric(status)
+      ) %>%
+      filter(!is.na(time_to_event)) #filters patients with no follow-up time or no death-time
+
+# table(survival_dataset$event_status)
+table(survival_dataset$event_status, useNA = "always") # 0(alive) = 843, 1(deaths) = 151, NAs = 42
+summary(survival_dataset$time_to_event)
+
+# > table(survival_dataset$status, useNA = "always")
+#    0    1 <NA> 
+#  843  151   42 
+
+# Remove 42NA's from event_status
+survival_dataset <- survival_dataset %>%
+      filter(!is.na(event_status))
+
+# View(survival_dataset)
+
+# > summary(survival_dataset$time_to_event)
+#    Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+#    -7.0   436.5   808.5  1207.1  1648.2  8556.0 
+
+```
+
+SURVIVAL OBJECT
+
+```{r}
+
+library(survival)
+
+surv_obj <- Surv(
+      time = survival_dataset$time_to_event,
+      event = survival_dataset$event_status
+)
+
+head(surv_obj)
+# View(surv_obj) # 0(alive) = 843, 1(deaths) = 151, NAs = 42
+
+```
+
+
+----------------------------
+BUILD COX MODEL
+----------------------------
+
+Evaluate multiple gene signatures. Build kaplan on gene signature with highest prognostic ability (luminal). 
+
+----------------------------
+BCL2 COX MODEL
+```{r}
+
+library(survival)
+library(dplyr)
+
+# Extract the BCL2 column from the survival dataset
+cox_data <- survival_dataset %>%
+      select(time_to_event, event_status, BCL2) %>%
+      na.omit()
+
+cox_data$BCL2 <- as.numeric(trimws(cox_data$BCL2)) #ensures that the BCL2 column is numeric.
+
+# Run cox model on BCL2 only
+cox_model <- coxph(
+      Surv(time_to_event, event_status) ~ BCL2,
+      data = cox_data
+)
+
+print(summary(cox_model))
+
+# Calculate Hazard Ratio
+hazard_ratio <- exp(coef(cox_model))
+
+print(hazard_ratio)
+
+```
+
+Results & Interpretation:
+      - Concordance= 0.565  (se = 0.04 ) -> very weak predictive power
+      - Likelihood ratio test= 0  on 1 df,   p=1 -> no evidence that BCL2 alone affects survival
+      - Wald test            = 0  on 1 df,   p=1 
+      - Score (logrank) test = 0  on 1 df,   p=1
+      - BCL2 alone is not prognostic in my cohort (i.e., it does not influence overall survival in this breast cancer dataset)
+
+Concordance Index (C-index) (validation of survival outcome) 
+      - Indicates the model's predictive ability
+      - Higher C-index = better prognosis. 
+
+- Hazard Ratio (HR) < 1 = higher expression decreases risk (i.e., BCL2 is a protective gene in this cohort)
+
+----------------------------
+ARBITRARY GENE SIGNATURE COX MODEL 
+(on Hand-selected DEGs from limma results)
+
+```{r}
+
+library(survival)
+library(dplyr)
+
+#Hand-selected DEGs from limma
+genes_of_interest <- c("BCL2", "FOXA1", "UGT8", "ROPN1", "HORMAD1", "CA12", "SERPINA3", "GREB1", "MAPT", "TBC1D9", "SLC44A4", "LRFN2", "GSDML", "C17orf37", "PNMT", "RRM2", "GRB7")
+
+# Subset relevant columns
+cox_data <- survival_dataset %>%
+      select(time_to_event, event_status, all_of(genes_of_interest)) %>%
+      na.omit() #remove NA's
+
+# Make the gene columns numeric
+cox_data[genes_of_interest] <- lapply(cox_data[genes_of_interest], function(x) as.numeric(trimws(x)))
+
+# Run multivariate cox model on said 17 genes
+cox_model <- coxph(
+      as.formula(paste("Surv(time_to_event, event_status) ~", paste(genes_of_interest, collapse = " + "))),
+      data = cox_data
+)
+
+print(summary(cox_model))
+
+# Calculate Hazard Ratio
+hazard_ratio <- exp(coef(cox_model))
+
+print(hazard_ratio)
+
+```
+
+Results & Interpretation:
+      - Concordance index (c-index)= 0.655  (se = 0.04 ) -> moderate predictive ability.
+      - Likelihood ratio test= 28.52  on 17 df,   p=0.04 -> statistically significant.
+      - Wald test            = 29.58  on 17 df,   p=0.03
+      - Score (logrank) test = 30.41  on 17 df,   p=0.02 -> Collectively, this group of genes is associated with survival.
+
+- Hazard Ratio (HR) > 1 = higher expression increases risk = worse survival (i.e., risk genes) = BCL2, FOXA1, UGT8, CA12, TBC1D9, LRFN2, GRB7
+- Hazard Ratio (HR) < 1 = higher expression decreases risk (i.e., protective genes) = ROPN1, HORMAD1, SERPINA3, GREB1, MAPT, SLC44A4, GSDML, C17orf37, PNMT, RRM2 
+
+----------------------------
+BASAL GENE SIGNATURE COX MODEL 
+(on Top 6 genes upreg in Basal subtype - from limma results)
+
+```{r}
+
+library(survival)
+library(dplyr)
+
+# Genes upregulated in BASAL subtype
+up_genes_basal <- c("ROPN1", "UGT8", "PPP1R14C", "HORMAD1", "KRT16", "ROPN1B")
+
+# Subset relevant columns
+cox_data <- survival_dataset %>%
+      select(time_to_event, event_status, all_of(up_genes_basal)) %>%
+      na.omit() #remove NA's
+
+# Make the gene columns numeric
+cox_data[up_genes_basal] <- lapply(cox_data[up_genes_basal], function(x) as.numeric(trimws(x)))
+
+# Run multivariate cox model on said 6 genes
+cox_model <- coxph(
+      as.formula(paste("Surv(time_to_event, event_status) ~", paste(up_genes_basal, collapse = " + "))),
+      data = cox_data
+)
+
+print(summary(cox_model))
+
+# Calculate Hazard Ratios
+hazard_ratio <- exp(coef(cox_model))
+
+print(hazard_ratio)
+
+```
+
+Results & Interpretation:
+      - Concordance= 0.548  (se = 0.037) -> weak predictive ability.
+      - Likelihood ratio test= 7.42  on 6 df,   p=0.3 
+      - Wald test            = 7.18  on 6 df,   p=0.3
+      - Score (logrank) test = 7.24  on 6 df,   p=0.3
+      - These 6 genes upregulated in the Basal subtype are not statistically significant and do not collectively predict survival in this cohort.
+      - p = 0.3 -> rejects null hypothesis
+
+- Hazard Ratio (HR) > 1 = higher expression increases risk = worse survival (i.e., risk genes) - UGT8, KRT16
+- Hazard Ratio (HR) < 1 = higher expression decreases risk (i.e., protective genes) - ROPN1, PPP1R14C, HORMAD1, ROPN1B
+
+----------------------------
+HER2 GENE SIGNATURE COX MODEL 
+(on genes upregulated in Her2 subtype - from limma results).
+
+```{r}
+
+library(survival)
+library(dplyr)
+
+# Genes upregulated in Her2 subtype
+up_genes_her2 <- c("GRB7", "PNMT", "RRM2", "GSDML", "C17orf37", "CLCA2", "ATP13A5", "AKR1B10", "MLPH", "GPR160", "LRFN2")
+
+# Subset relevant columns
+cox_data <- survival_dataset %>%
+      select(time_to_event, event_status, all_of(up_genes_her2)) %>%
+      na.omit() #remove NA's
+
+# Make the gene columns numeric
+cox_data[up_genes_her2] <- lapply(cox_data[up_genes_her2], function(x) as.numeric(trimws(x)))
+
+# Run multivariate cox model on said 11 genes
+cox_model <- coxph(
+      as.formula(paste("Surv(time_to_event, event_status) ~", paste(up_genes_her2, collapse = " + "))),
+      data = cox_data
+)
+
+print(summary(cox_model))
+# summary(cox_model)$coefficients
+
+# Calculate Hazard Ratios
+hazard_ratio <- exp(coef(cox_model))
+
+print(hazard_ratio)
+
+```
+
+Results & Interpretation:
+      - Concordance= 0.604  (se = 0.04 ) -> low-to-moderate predictive ability.
+      - Likelihood ratio test= 16.24  on 11 df,   p=0.1 -> not statistically significant (p > 0.05)
+      - Wald test            = 16.28  on 11 df,   p=0.1
+      - Score (logrank) test = 16.43  on 11 df,   p=0.1 -> genes are not strongly associated with survival.
+      - Collectively, this group of genes does not significantly predict survival.
+
+- Hazard Ratio (HR) > 1 = higher expression increases risk = worse survival (i.e., risk genes) - GRB7, PNMT, RRM2, GSDML, AKR1B10, GPR160, LRFN2 
+- Hazard Ratio (HR) < 1 = higher expression decreases risk (i.e., protective genes) - C17orf37, CLCA2, ATP13A5, MLPH
+
+----------------------------
+LUMINAL GENE SIGNATURE COX MODEL 
+(on genes upregulated in luminal subtypes (both lumA & lumB) - from limma results).
+
+```{r}
+
+library(survival)
+library(dplyr)
+
+# Genes upreg in luminal subtypes
+up_genes_luminal <- c("BCL2", "SERPINA3", "GREB1", "MAPT", "FOXA1", "CA12", "TBC1D9", "MLPH", "SLC44A4", "PARD6B", "PPM1J", "LRFN2")
+
+# Subset relevant columns
+cox_data <- survival_dataset %>%
+      select(time_to_event, event_status, all_of(up_genes_luminal)) %>%
+      na.omit() #removes NA's
+
+# Make the gene columns numeric
+cox_data[up_genes_luminal] <- lapply(cox_data[up_genes_luminal], function(x) as.numeric(trimws(x)))
+
+# Run multivariate cox model on said 12 genes
+cox_model <- coxph(
+      as.formula(paste("Surv(time_to_event, event_status) ~", paste(up_genes_luminal, collapse = " + "))),
+      data = cox_data
+)
+
+print(summary(cox_model))
+
+# Calculate Hazard Ratios
+hazard_ratio <- exp(coef(cox_model))
+
+print(hazard_ratio)
+
+```
+
+Results & Interpretation:
+      - Concordance= 0.641  (se = 0.04 ) -> moderate predictive ability, estimate is reasonably precise.
+      - Likelihood ratio test= 27.35  on 12 df,   p=0.007 -> p < 0.05 = At least a few of the aforementioned 12 genes are significantly associated with survival
+      - Wald test            = 28.02  on 12 df,   p=0.006 -> p < 0.05 = at least one gene contributes significantly to predicting survival
+      - Score (logrank) test = 28.23  on 12 df,   p=0.005 -> p < 0.05 = signifies that this group of genes are prognostic.
+      - p < 0.05 = model is statistically significant
+
+- Hazard Ratio (HR) > 1 = higher expression increases risk = worse survival (i.e., risk genes) - FOXA1, CA12, TBC1D9, MLPH, PARD6B, PPM1J, LRFN2
+- Hazard Ratio (HR) < 1 = higher expression decreases risk (i.e., protective genes) - BCL2, SERPINA3, GREB1, MAPT, SLC44A4
+
+----------------------------
+
+In this cohort, survival outcome appears to be subtype-specific.
+The luminal gene signature model is statistically significant (p < 0.05), and 
+signifies that this group of genes are prognostic.
+
+----------------------------
+----------------------------
+CALCULATION OF RISK (PROGNOSTIC) SCORE for LUMINAL GENE SIGNATURE
+----------------------------
+      - A risk score is calculated for each patient.
+      - Risk scores are used to separate patients into HIGH RISK v. LOW RISK GROUPS.
+      - It is this prognostic score that turns the model to into a predictive tool. 
+      
+```{r}
+
+# Add risk scores
+cox_data$risk_score <- predict(cox_model, type = "lp")
+# head(cox_data$risk_score)
+
+positive_risk <- cox_data[cox_data$risk_score > 0, ]
+nrow(positive_risk) #Number of patients with positive risk scores = 223
+
+negative_risk <- cox_data[cox_data$risk_score < 0, ]
+nrow(negative_risk) #Number of patients with negative risk scores = 245
+
+```
+
+Note:
+Survival dataset = 994 patients. After filtering out patients with missing values, 
+the cox_data (used to fit the cox model), now has 468 patients (none with missing values). 
+Cox model can only use patients with complete datasets. 
+
+----------------------------
+----------------------------
+STRATIFY PATIENTS 
+into "High Risk" v. "Low Risk" groups" using cox_data dataset
+
+```{r}
+
+# Stratify patients by median risk score
+median_score <- median(cox_data$risk_score)
+
+cox_data <- cox_data %>%
+      mutate(
+            risk_group = ifelse(risk_score > median_score, "High Risk", "Low Risk")
+      )
+
+table(cox_data$risk_group)
+# High Risk (234) Low Risk (234)
+
+```
+
+Interpretation:
+      - High risk = Worse survival
+      - Low risk = Better survival
+
+----------------------------
+----------------------------
+KAPLAN-MEIER PLOT 
+      - Visualization of the comparison between "High Risk" v. "Low Risk" groups.
+      - Using Luminal Gene Signature - highest prognostic value.
+
+```{r}
+
+library(survival)
+library(survminer)
+
+# Creation of Survival Object
+surv_obj <- Surv(time = cox_data$time_to_event, event = cox_data$event_status)
+
+km_fit <- survfit(surv_obj ~ risk_group, data = cox_data) #fit kaplan-meier (high risk vs. low risk)
+
+km_fit <- survfit(Surv(time_to_event, event_status) ~ risk_group, data = cox_data) #fit kaplan survival curves
+
+# Plot Kaplan-Meier Plot
+kaplan <- ggsurvplot(
+      km_fit,
+      data = cox_data,
+      risk.table = TRUE, 
+      pval = TRUE,
+      conf.int = TRUE,
+      palette = c("red", "green"), #distinguish low risk (green) vs. high risk (red) by colour
+      xlab = "Time (days)",
+      ylab = "Overall Survival Probability",
+      title = "Kaplan-Meier Survival Curves by Risk Group",
+      legend.title = "Risk Group",
+      legend.labs = c("High Risk", "Low Risk") #label high and low risk groups
+)
+
+# Print in Report
+print(kaplan)
+
+# Save Kaplan-Meier Plot
+ggsave(
+      filename = "KM_survival_plot.png",
+      plot = kaplan$plot,
+      width = 8,
+      height = 6,
+      dpi = 300
+)
+
+```
+
+Interpretation:
+      - High risk = patients above median = worse survival
+      - Low risk = patients below median = better survival
+      - p = 0.00001 (< 0.05) = statistically significant
+
+----------------------------
+----------------------------
+ESTIMATE X-YEAR SURVIVAL
+(i.e., the probability of surviving after x number of years for patients in the high expression v. low expression groups)
+
+```{r}
+
+print(summary(km_fit, times = c(365, 1095, 1825))) #Time is measured in days
+
+
+```
+
+Interpretation:
+      -  High Risk Group = Survival drops faster over time = more deaths over time.
+            - 1-year survival = 97.3%
+            - 3-year survival = 86.2%
+            - 5-year survival = 76.3%
+      -  Low Risk Group = Survival curves declines slower than that of high risk group. 
+            - 1-year survival = 98.6%
+            - 3-year survival = 93.2%
+            - 5-year survival = 88.6%
+
+----------------------------
+----------------------------
+ESTIMATE MEDIAN SURVIVAL TIME
+(i.e., the estimated time when survival = 0.5)
+
+```{r}
+
+summary(km_fit)
+
+```
+
+Interpretation:
+      - Median survival time (High Risk Group) = 2,965 days (~8.1 years) = shorter survival
+      - Median survival time (Low Risk Group) = 6,456 days (~17.7 years) = longer survival
+
+----------------------------
+----------------------------
+UNIVARIATE COX REGRESSION ON RISK SCORE
+----------------------------
+
+Evaluates if multi-gene signature (i.e., risk score) actually predicts survival - and quantifies.
+
+```{r}
+
+library(survival)
+library(dplyr)
+
+risk_score <- cox_data$risk_score
+
+coxph(Surv(time_to_event, event_status) ~ risk_score, data = cox_data)
+
+cox_uni <- coxph(Surv(time_to_event, event_status) ~ risk_score,
+      data = cox_data)
+
+print(summary(cox_uni))
+
+# Calculate Hazard Ratio
+hazard_ratio <- exp(coef(cox_uni)) #HR = 2.718282 
+
+# Print Hazard Ratios
+print(hazard_ratio)
+
+```
+
+Interpretation: 
+      - Univariate cox regression confirms that the risk score is significantly associated with overall survival (HR = 2.72, 95% CI = 1.88-3.93, p < 0.001).
+      - Higher risk scores = increased hazard = multigene signatures is a strong predictor of patient prognosis.
+      - Hazard Ratio (effect size) = 2.72 (for every 1-unit increase in risk score, theres a 2.7-fold higher hazard of death).
+      - 95% Confidence Interval (CI) = 1.88 - 3.93.
+      - p-value = 0.00000012 = extremely significant predictor.
+      - C-index = 0.641 = moderate predictive accuracy.
+
+----------------------------
+----------------------------
+KEY FINDINGS & BIOLOGICAL INSIGHTS/INTERPRETATION
+----------------------------
+
+- The model identified a luminal gene signature associated with overall survival.
+- Luminal cancers tend to have better prognosis than non-luminal. 
+      - MAPT + GREB1 (HR < 1) = strongest protective genes. Main functions = estrogen receptor signalling (GREB1 & MAPT), luminal differentiation (MAPT)  better prognosis.
+      - PARD6B  + TBC1D9 + LRFN2 + FOXA1 + (HR > 1) = moderate overall association with increased risk. Main functions = transcription regulation (FOXA1), epithelial organization/differentiation (PARD6B),  signaling (TBC1D9)   tumor progression.
+- C-index = 0.641 (se = 0.04) = Moderate Predictive Ability.
+
+----------------------------
+DISCUSSION
+----------------------------
+
+The objective of the study was to evaluate the prognostic value of RNA-seq multi-gene 
+signatures derived from TCGA-BRCA data, and determine their efficacy in predicting overall 
+survival in breast cancer patients. Subtype-specific gene signatures, identified through 
+differential analysis between Luminal and non-Luminal subtypes, demonstrated  significant 
+prognostic value in breast cancer. The model's ability to stratify patients into distinct high- 
+and low-risk groups provides evidence that high-dimensional RNA-seq data can provide prognostic insights. 
+
+This work is consistent with the scientific literature, as a number of studies have corroborated 
+the prognostic potential of gene expression signatures in breast cancer (van ‘t Veer et al., 2002)
+(Filipits et al. 2011), the potential of gene signatures to guide clinical decisions (Paik et al., 2004), 
+and the subtype-specificity associated with prognosis (Parker et al., 2009).
+
+----------------------------
+CONCLUSION & FUTURE WORK
+----------------------------
+
+- This analysis supports the potential of RNA-seq data for precision oncology.
+- Gene expression differs across subtypes and may provide prognostic insights.
+- Numerous prognostic gene signatures have already been established in breast cancer. While the gene signature identified in this analysis may be unique and contribute to prognosis, it builds upon an already existing concept. 
+- Future Work:
+      - Validating the survival model on an external dataset.
+      - Improving the model’s accuracy and predictive performance by:
+            - Integrating more clinical variables (e.g., tumor purity).
+            - Increasing sample size.
+
+----------------------------
+REFERENCES
+----------------------------
+
+      - van 't Veer, L. J., Dai, H., van de Vijver, M. J., He, Y. D., Hart, A. A., Mao, M., Peterse, H. L., van der Kooy, K., Marton, M. J., Witteveen, A. T., Schreiber, G. J., Kerkhoven, R. M., Roberts, C., Linsley, P. S., Bernards, R., & Friend, S. H. (2002). Gene expression profiling predicts clinical outcome of breast cancer. Nature, 415(6871), 530–536. https://doi.org/10.1038/415530a
+      - Paik, S., Shak, S., Tang, G., Kim, C., Baker, J., Cronin, M., Baehner, F. L., Walker, M. G., Watson, D., Park, T., Hiller, W., Fisher, E. R., Wickerham, D. L., Bryant, J., & Wolmark, N. (2004). A multigene assay to predict recurrence of tamoxifen-treated, node-negative breast cancer. The New England journal of medicine, 351(27), 2817–2826. https://doi.org/10.1056/NEJMoa041588
+      - Parker, J. S., Mullins, M., Cheang, M. C., Leung, S., Voduc, D., Vickery, T., Davies, S., Fauron, C., He, X., Hu, Z., Quackenbush, J. F., Stijleman, I. J., Palazzo, J., Marron, J. S., Nobel, A. B., Mardis, E., Nielsen, T. O., Ellis, M. J., Perou, C. M., & Bernard, P. S. (2009). Supervised risk predictor of breast cancer based on intrinsic subtypes. Journal of clinical oncology : official journal of the American Society of Clinical Oncology, 27(8), 1160–1167. https://doi.org/10.1200/JCO.2008.18.1370
+      - Filipits, M., Rudas, M., Jakesz, R., Dubsky, P., Fitzal, F., Singer, C. F., Dietze, O., Greil, R., Jelen, A., Sevelda, P., Freibauer, C., Müller, V., Jänicke, F., Schmidt, M., Kölbl, H., Rody, A., Kaufmann, M., Schroth, W., Brauch, H., Schwab, M., … EP Investigators (2011). A new molecular predictor of distant recurrence in ER-positive, HER2-negative breast cancer adds independent information to conventional clinical risk factors. Clinical cancer research : an official journal of the American Association for Cancer Research, 17(18), 6012–6020. https://doi.org/10.1158/1078-0432.CCR-11-0926
